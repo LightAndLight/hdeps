@@ -1,0 +1,6 @@
+{
+  "aeson": {
+    "type": "hackage",
+    "version": "2.2.3.0"
+  }
+}

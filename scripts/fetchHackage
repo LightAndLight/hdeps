@@ -1,0 +1,24 @@
+#! /usr/bin/env bash
+set -euo pipefail
+
+name="$1"
+version="$2"
+
+url="https://hackage.haskell.org/package/$name/$name-$version.tar.gz"
+echo "Fetching $url..."
+prefetchOutput=$(nix-prefetch-url --unpack --print-path --name "hackage.haskell.org-$name-$version-src" "$url")
+
+hash=$(cut -f 1 -d $'\n' <<<"$prefetchOutput")
+src=$(cut -f 2 -d $'\n' <<<"$prefetchOutput")
+
+cat >"hackage.haskell.org-$name-$version-src.nix" <<EOF
+fetchurl {
+  url = "$url";
+  hash = "$hash";
+}
+EOF
+
+pattern=$(sed 's/[\/.]/\\\0/g' <<<"$src")
+echo $pattern
+cabal2nix "$src" | \
+  sed "s/$pattern/import \.\/hackage\.haskell\.org-$name-$version-src\.nix/g" >"hackage.haskell.org-$name-$version.nix"
