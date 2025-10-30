@@ -2,5 +2,13 @@
   "aeson": {
     "type": "hackage",
     "version": "2.2.3.0"
+  },
+  "beam-postgres-trans": {
+    "type": "github",
+    "owner": "LightAndLight",
+    "repository": "beam",
+    "commit": "3ebb79baff43416caee95e81c05ce74c429bbe82",
+    "directory": "beam-postgres-trans",
+    "tests": false
   }
 }
