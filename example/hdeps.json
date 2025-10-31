@@ -1,6 +1,7 @@
 {
   "aeson": {
     "type": "hackage",
+    "revision": "4",
     "version": "2.2.3.0"
   },
   "beam-postgres-trans": {

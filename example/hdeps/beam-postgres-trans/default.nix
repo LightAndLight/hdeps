@@ -9,7 +9,7 @@
 mkDerivation {
   pname = "beam-postgres-trans";
   version = "0.5.3.1";
-  src = import ./github.com-LightAndLight-beam-3ebb79baff43416caee95e81c05ce74c429bbe82-beam-postgres-trans-src.nix;
+  src = import ./src.nix;
   postUnpack = "sourceRoot+=/beam-postgres-trans; echo source root reset to $sourceRoot";
   libraryHaskellDepends = [
     aeson attoparsec base beam-core beam-migrate beam-postgres

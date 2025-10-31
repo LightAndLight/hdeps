@@ -4,15 +4,16 @@
 , generically, ghc-prim, hashable, indexed-traversable
 , integer-conversion, integer-logarithms, lib, network-uri
 , OneTuple, primitive, QuickCheck, quickcheck-instances, scientific
-, semialign, strict, tagged, tasty, tasty-golden, tasty-hunit
-, tasty-quickcheck, template-haskell, text, text-iso8601
-, text-short, th-abstraction, these, time, time-compat
-, unordered-containers, uuid-types, vector, witherable
+, semialign, stdenv, strict, tagged, tasty, tasty-golden
+, tasty-hunit, tasty-quickcheck, template-haskell, text
+, text-iso8601, text-short, th-abstraction, these, time
+, time-compat, unordered-containers, uuid-types, vector, witherable
 }:
 mkDerivation {
   pname = "aeson";
   version = "2.2.3.0";
-  src = import ./hackage.haskell.org-aeson-2.2.3.0-src.nix;
+  revision = "4";
+  src = import ./src-revised.nix { inherit stdenv; };
   libraryHaskellDepends = [
     base bytestring character-ps containers data-fix deepseq dlist
     exceptions generically ghc-prim hashable indexed-traversable

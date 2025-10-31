@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NoFieldSelectors #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -19,6 +20,7 @@ import qualified Data.Text as Text
 import System.Directory (createDirectoryIfMissing)
 import qualified System.Process as Process
 import Data.Maybe (maybeToList, fromMaybe)
+import Data.Traversable (for)
 
 data Cli
   = Cli{ inputFile :: FilePath, outputDir :: FilePath }
@@ -34,12 +36,16 @@ newtype Hdeps
   deriving (FromJSON, ToJSON)
 
 data Hdep
-  = Hackage{ version :: !Text }
+  = Hackage{ version :: !Text, revision :: !(Maybe Text) }
   | Github{ owner :: !Text, repository :: !Text, commit :: !Text, directory :: !(Maybe Text), tests :: !(Maybe Bool) }
 
 instance ToJSON Hdep where
-  toJSON (Hackage version) =
-    Json.object [fromString "type" .= "hackage", fromString "version" .= version]
+  toJSON (Hackage version mRevision) =
+    Json.object $
+      [ fromString "type" .= "hackage"
+      , fromString "version" .= version
+      ] ++
+      [ fromString "revision" .= revision | revision <- maybeToList mRevision ]
   toJSON (Github owner repository commit mDirectory mTests) =
     Json.object $
       [ fromString "type" .= "github"
@@ -56,7 +62,8 @@ instance FromJSON Hdep where
     case type_ of
       "hackage" -> do
         version <- obj .: fromString "version"
-        pure Hackage{ version }
+        revision <- obj .:? fromString "revision"
+        pure Hackage{ version, revision }
       "github" -> do
         owner <- obj .: fromString "owner"
         repository <- obj .: fromString "repository"
@@ -79,11 +86,11 @@ main = do
       Right a -> pure a
 
   createDirectoryIfMissing True cli.outputDir
-  drvFiles <-
+  names <-
     Map.traverseWithKey
       (\name hdep -> do
-        drvFile <- getHdep cli.outputDir name hdep
-        pure (name, drvFile)
+        getHdep cli.outputDir name hdep
+        pure name
       )
       hdeps
 
@@ -91,9 +98,9 @@ main = do
   writeFile overlayFile . unlines $
     "self: super: {" :
     foldMap
-      (\(name, drvFile) ->
-        ["  " ++ Text.unpack name ++ " = " ++ "self.callPackage ./" ++ Text.unpack drvFile ++ " {};"])
-        drvFiles ++
+      (\name ->
+        ["  " ++ Text.unpack name ++ " = " ++ "self.callPackage ./" ++ Text.unpack name ++ " {};"])
+        names ++
     ["}"]
   hPutStrLn stderr $ "created " ++ overlayFile
 
@@ -101,6 +108,127 @@ readProcess :: FilePath -> [String] -> String -> IO String
 readProcess =
   -- TODO: better error for missing program
   Process.readProcess
+    
+sedEscape :: String -> String
+sedEscape = concatMap (\c -> if c `elem` "/." then ['\\', c] else [c])
+
+newtype NixStorePath = NixStorePath{ value :: String }
+
+newtype Hash = Hash{ value :: String }
+
+nixPrefetchUrl ::
+  -- | @--unpack@
+  Bool ->
+  -- | Name in the Nix store
+  String ->
+  -- | URL
+  String ->
+  IO (Hash, NixStorePath)
+nixPrefetchUrl unpack name url = do
+  output <- readProcess "nix-prefetch-url" ([ "--unpack" | unpack ] ++ ["--print-path" , "--name" , name, url]) ""
+
+  case lines output of
+    hash : src : _ -> pure (Hash hash, NixStorePath src)
+    _ -> do
+      hPutStrLn stderr $ "error: unexpected output from nix-prefetch-url: " ++ output
+      exitFailure
+
+fetchUrl ::
+  -- | Output directory
+  FilePath ->
+  -- | URL
+  String ->
+  -- | Name in the Nix store
+  String ->
+  -- | Nix file name
+  String ->
+  IO NixStorePath
+fetchUrl outputDir url nixName fileName = do
+  hPutStrLn stderr $ "fetching " ++ url ++ "..."
+  (hash, storePath) <- nixPrefetchUrl False nixName url
+
+  let nixFile = outputDir ++ "/" ++ fileName
+  writeFile nixFile $
+    unlines
+    [ "builtins.fetchurl {"
+    , "  url = \"" <> url <> "\";"
+    , "  sha256 = \"" <> hash.value <> "\";"
+    , "}"
+    ]
+  hPutStrLn stderr $ "  created " ++ nixFile
+
+  pure storePath
+
+fetchTarball ::
+  -- | Output directory
+  FilePath ->
+  -- | URL
+  String ->
+  -- | Name in the Nix store
+  String ->
+  -- | Nix file name
+  String ->
+  IO NixStorePath
+fetchTarball outputDir url nixName fileName = do
+  hPutStrLn stderr $ "fetching " ++ url ++ "..."
+  (hash, storePath) <- nixPrefetchUrl True nixName url
+
+  let nixFile = outputDir ++ "/" ++ fileName
+  writeFile nixFile $
+    unlines
+    [ "builtins.fetchTarball {"
+    , "  url = \"" <> url <> "\";"
+    , "  sha256 = \"" <> hash.value <> "\";"
+    , "}"
+    ]
+  hPutStrLn stderr $ "  created " ++ nixFile
+
+  pure storePath
+
+urlHackageRevision ::
+  -- | Package name
+  Text ->
+  -- | Revision
+  Text ->
+  Text
+urlHackageRevision name revision =
+  fromString "https://hackage.haskell.org/package/" <>
+  name <>
+  fromString "/revision/" <>
+  revision <>
+  fromString ".cabal"
+
+urlHackagePackage ::
+  -- | Package name
+  Text ->
+  -- | Version
+  Text ->
+  Text
+urlHackagePackage name version =
+  fromString "https://hackage.haskell.org/package/" <>
+  name <>
+  fromString "/" <>
+  name <>
+  fromString "-" <>
+  version <>
+  fromString ".tar.gz"
+
+urlGithubCommit ::
+  -- | Owner
+  Text ->
+  -- | Repository
+  Text ->
+  -- | Commit
+  Text ->
+  Text
+urlGithubCommit owner repository commit =
+  fromString "https://github.com/" <>
+  owner <>
+  fromString "/" <>
+  repository <>
+  fromString "/archive/" <>
+  commit <>
+  fromString ".tar.gz"
 
 getHdep ::
   -- | Output directory
@@ -109,98 +237,82 @@ getHdep ::
   Text ->
   Hdep ->
   -- | Derivation path relative to output directory
-  IO Text
-getHdep outputDir name (Hackage version) = do
-  let
-    url =
-      "https://hackage.haskell.org/package/" <>
-      Text.unpack name <>
-      "/" <>
-      Text.unpack name <>
-      "-" <>
-      Text.unpack version <>
-      ".tar.gz"
+  IO ()
+getHdep outputDir name (Hackage version mRevision) = do
+  let packageDir = outputDir ++ "/" ++ Text.unpack name
+  createDirectoryIfMissing True packageDir
 
-  hPutStrLn stderr $ "fetching " ++ url ++ "..."
+  mRevisionInfo <- for mRevision $ \revision -> do
+    let url = urlHackageRevision name revision
+
+    let nixFile = "cabal.nix"
+    revisedCabalStorePath <-
+      fetchUrl
+        packageDir
+        (Text.unpack url)
+        ("hackage.haskell.org-" <> Text.unpack name <> "-" <> Text.unpack version <> ".cabal")
+        nixFile
+
+    pure (revision, revisedCabalStorePath)
+
+  let url = urlHackagePackage name version
+
   let drvName = "hackage.haskell.org-" <> Text.unpack name <> "-" <> Text.unpack version
-  let srcDrvName = drvName <> "-src"
-  (hash, src) <- do
-    output <- readProcess "nix-prefetch-url" ["--unpack" , "--print-path" , "--name" , srcDrvName , url] ""
+  src <- fetchTarball packageDir (Text.unpack url) (drvName <> "-src") "src.nix"
 
-    case lines output of
-      hash : src : _ -> pure (hash, src)
-      _ -> do
-        hPutStrLn stderr $ "error: unexpected output from nix-prefetch-url: " ++ output
-        exitFailure
+  mRevisedSrc <-
+    for mRevisionInfo $ \(revision, revisedCabalSrc) -> do
+      let srcRevisedNix = packageDir ++ "/src-revised.nix"
+      writeFile srcRevisedNix $
+        unlines
+        [ "{ stdenv }:"
+        , "stdenv.mkDerivation {"
+        , "  name = \"" ++ drvName <> "-r" <> Text.unpack revision <> "-src" ++ "\";"
+        , "  src = import ./src.nix;"
+        , "  installPhase = ''"
+        , "    mkdir $out"
+        , "    cp -R * $out/"
+        , "    cp ${import ./cabal.nix} $out/" ++ Text.unpack name ++ ".cabal"
+        , "  '';"
+        , "}"
+        ]
 
-  let srcDrvFileRelative = srcDrvName ++ ".nix"
-  let srcDrvFile = outputDir ++ "/" ++ srcDrvFileRelative
-  writeFile srcDrvFile $
-    unlines
-    [ "builtins.fetchTarball {"
-    , "  url = \"" <> url <> "\";"
-    , "  sha256 = \"" <> hash <> "\";"
-    , "}"
-    ]
-  hPutStrLn stderr $ "  created " ++ srcDrvFile
+      hPutStrLn stderr $ "  created " ++ srcRevisedNix
+      pure revisedCabalSrc
 
-  let sedEscape = concatMap (\c -> if c `elem` "/." then ['\\', c] else [c])
-
-  let drvFileRelative = drvName ++ ".nix"
-  let drvFile = outputDir ++ "/" ++ drvFileRelative
-  writeFile drvFile =<<
-    readProcess "sed" ["s/" ++ sedEscape src ++ "/" ++ sedEscape ("import ./" ++ srcDrvFileRelative) ++ "/g"] =<<
-    readProcess "cabal2nix" [src] ""
+  let drvFile = packageDir ++ "/default.nix"
+  case mRevisedSrc of
+    Nothing ->
+      writeFile drvFile =<<
+        readProcess "sed" ["s/" ++ sedEscape src.value ++ "/" ++ sedEscape "import ./src.nix" ++ "/g"] =<<
+        readProcess "cabal2nix" [src.value] ""
+    Just revisedCabalStorePath ->
+      writeFile drvFile =<<
+        readProcess "sed" ["s/editedCabalFile = .*/src = " ++ sedEscape "import ./src-revised.nix { inherit stdenv; }" ++ ";/g"] =<<
+        readProcess "sed" ["/^ *sha256.*/d"] =<<
+        readProcess "cabal2nix" ["--extra-arguments", "stdenv", revisedCabalStorePath.value] ""
   hPutStrLn stderr $ "  created " ++ drvFile
 
   hPutStrLn stderr "done"
-  pure $ Text.pack drvFileRelative
-getHdep outputDir _name (Github owner repository commit mDirectory mTests) = do
-  let
-    url =
-      "https://github.com/" <>
-      Text.unpack owner <>
-      "/" <>
-      Text.unpack repository <>
-      "/archive/" <>
-      Text.unpack commit <>
-      ".tar.gz"
+getHdep outputDir name (Github owner repository commit mDirectory mTests) = do
+  let packageDir = outputDir ++ "/" ++ Text.unpack name
+  createDirectoryIfMissing True packageDir
 
-  hPutStrLn stderr $ "fetching " ++ url ++ "..."
+  let url = urlGithubCommit owner repository commit
+
   let drvName = "github.com-" <> Text.unpack owner <> "-" <> Text.unpack repository <> "-" <> Text.unpack commit <> foldMap (("-" <>) . Text.unpack) mDirectory
-  let srcDrvName = drvName <> "-src"
-  (hash, src) <- do
-    output <- readProcess "nix-prefetch-url" ["--unpack" , "--print-path" , "--name" , srcDrvName , url] ""
+  src <- fetchTarball packageDir (Text.unpack url) (drvName <> "-src") "src.nix"
 
-    case lines output of
-      hash : src : _ -> pure (hash, src)
-      _ -> do
-        hPutStrLn stderr $ "error: unexpected output from nix-prefetch-url: " ++ output
-        exitFailure
-
-  let srcDrvFileRelative = srcDrvName ++ ".nix"
-  let srcDrvFile = outputDir ++ "/" ++ srcDrvFileRelative
-  writeFile srcDrvFile $
-    unlines
-    [ "builtins.fetchTarball {"
-    , "  url = \"" <> url <> "\";"
-    , "  sha256 = \"" <> hash <> "\";"
-    , "}"
-    ]
-  hPutStrLn stderr $ "  created " ++ srcDrvFile
-
-  let sedEscape = concatMap (\c -> if c `elem` "/." then ['\\', c] else [c])
-
-  let drvFileRelative = drvName ++ ".nix"
-  let drvFile = outputDir ++ "/" ++ drvFileRelative
+  let drvFile = packageDir ++ "/default.nix"
   writeFile drvFile =<<
-    readProcess "sed" ["s/" ++ sedEscape src ++ "/" ++ sedEscape ("import ./" ++ srcDrvFileRelative) ++ "/g"] =<<
+    readProcess "sed" ["s/" ++ sedEscape src.value ++ "/" ++ sedEscape "import ./src.nix" ++ "/g"] =<<
     readProcess
       "cabal2nix"
       (maybe [] (\directory -> ["--subpath", Text.unpack directory]) mDirectory ++
         [ "--no-check" | fromMaybe True mTests ] ++
-        [src]) ""
+        [src.value]
+      )
+      ""
   hPutStrLn stderr $ "  created " ++ drvFile
 
   hPutStrLn stderr "done"
-  pure $ Text.pack drvFileRelative
