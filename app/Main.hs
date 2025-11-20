@@ -90,7 +90,7 @@ instance FromJSON Hdep where
         repository <- obj .: fromString "repository"
         commit <- obj .: fromString "commit"
         directory <- obj .:? fromString "directory"
-        tests <- obj .:? fromString "tests "
+        tests <- obj .:? fromString "tests"
         pure Github{owner, repository, commit, directory, tests}
       _ -> fail $ "invalid type: " ++ type_
 
