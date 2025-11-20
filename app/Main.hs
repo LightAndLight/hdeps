@@ -10,7 +10,9 @@ module Main where
 import Control.Applicative (optional, (<**>))
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.:?), (.=))
 import qualified Data.Aeson as Json
+import qualified Data.Aeson.Types as Json (parseMaybe)
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Lazy.Char8 as LazyByteString.Char8
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, maybeToList)
@@ -59,6 +61,12 @@ data Hdep
       , directory :: !(Maybe Text)
       , tests :: !(Maybe Bool)
       }
+  | Git
+      { url :: !FilePath
+      , commit :: !Text
+      , directory :: !(Maybe Text)
+      , tests :: !(Maybe Bool)
+      }
 
 instance ToJSON Hdep where
   toJSON (Hackage version mRevision) =
@@ -72,6 +80,14 @@ instance ToJSON Hdep where
       [ fromString "type" .= "github"
       , fromString "owner" .= owner
       , fromString "repository" .= repository
+      , fromString "commit" .= commit
+      ]
+        ++ [fromString "directory" .= directory | directory <- maybeToList mDirectory]
+        ++ [fromString "tests" .= tests | tests <- maybeToList mTests]
+  toJSON (Git url commit mDirectory mTests) =
+    Json.object $
+      [ fromString "type" .= "git"
+      , fromString "url" .= url
       , fromString "commit" .= commit
       ]
         ++ [fromString "directory" .= directory | directory <- maybeToList mDirectory]
@@ -92,6 +108,12 @@ instance FromJSON Hdep where
         directory <- obj .:? fromString "directory"
         tests <- obj .:? fromString "tests"
         pure Github{owner, repository, commit, directory, tests}
+      "git" -> do
+        url <- obj .: fromString "url"
+        commit <- obj .: fromString "commit"
+        directory <- obj .:? fromString "directory"
+        tests <- obj .:? fromString "tests"
+        pure Git{url, commit, directory, tests}
       _ -> fail $ "invalid type: " ++ type_
 
 main :: IO ()
@@ -208,6 +230,62 @@ fetchTarball outputDir url nixName fileName = do
       [ "builtins.fetchTarball {"
       , "  url = \"" <> url <> "\";"
       , "  sha256 = \"" <> hash.value <> "\";"
+      , "}"
+      ]
+  hPutStrLn stderr $ "  created " ++ nixFile
+
+  pure storePath
+
+nixPrefetchGit ::
+  -- | Name in the Nix store
+  String ->
+  -- | URL
+  String ->
+  -- | Commit
+  String ->
+  IO (Hash, NixStorePath)
+nixPrefetchGit name url commit = do
+  output <-
+    readProcess
+      "nix-prefetch-git"
+      ["--name", name, "--rev", commit, url]
+      ""
+
+  let
+    parser value = do
+      hash <- value .: fromString "sha256"
+      src <- value .: fromString "path"
+      pure (Hash hash, NixStorePath src)
+
+  case Json.parseMaybe parser =<< Json.decode' (LazyByteString.Char8.pack output) of
+    Nothing -> do
+      hPutStrLn stderr $ "error: unexpected output from nix-prefetch-git: " ++ output
+      exitFailure
+    Just a ->
+      pure a -- (h(Hash hash, NixStorePath src)
+
+fetchGit ::
+  -- | Output directory
+  FilePath ->
+  -- | URL
+  String ->
+  -- | Commit
+  String ->
+  -- | Name in the Nix store
+  String ->
+  -- | Nix file name
+  String ->
+  IO NixStorePath
+fetchGit outputDir url commit nixName fileName = do
+  hPutStrLn stderr $ "fetching " ++ url ++ "..."
+  (_hash, storePath) <- nixPrefetchGit nixName url commit
+
+  let nixFile = outputDir ++ "/" ++ fileName
+  writeFile nixFile $
+    unlines
+      [ "builtins.fetchGit {"
+      , "  url = \"" <> url <> "\";"
+      , "  rev = \"" <> commit <> "\";"
       , "}"
       ]
   hPutStrLn stderr $ "  created " ++ nixFile
@@ -348,7 +426,30 @@ getHdep outputDir name (Github owner repository commit mDirectory mTests) = do
     =<< readProcess
       "cabal2nix"
       ( maybe [] (\directory -> ["--subpath", Text.unpack directory]) mDirectory
-          ++ ["--no-check" | fromMaybe True mTests]
+          ++ ["--no-check" | maybe False not mTests]
+          ++ [src.value]
+      )
+      ""
+  hPutStrLn stderr $ "  created " ++ drvFile
+
+  hPutStrLn stderr "done"
+getHdep outputDir name (Git url commit mDirectory mTests) = do
+  let packageDir = outputDir ++ "/" ++ Text.unpack name
+  createDirectoryIfMissing True packageDir
+
+  let drvName =
+        "local-"
+          <> Text.unpack commit
+          <> foldMap (("-" <>) . Text.unpack) mDirectory
+  src <- fetchGit packageDir url (Text.unpack commit) (drvName <> "-src") "src.nix"
+
+  let drvFile = packageDir ++ "/default.nix"
+  writeFile drvFile
+    =<< readProcess "sed" ["s/" ++ sedEscape src.value ++ "/" ++ sedEscape "import ./src.nix" ++ "/g"]
+    =<< readProcess
+      "cabal2nix"
+      ( maybe [] (\directory -> ["--subpath", Text.unpack directory]) mDirectory
+          ++ ["--no-check" | maybe False not mTests]
           ++ [src.value]
       )
       ""

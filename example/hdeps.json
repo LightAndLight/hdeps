@@ -11,5 +11,10 @@
     "commit": "3ebb79baff43416caee95e81c05ce74c429bbe82",
     "directory": "beam-postgres-trans",
     "tests": false
+  },
+  "hdeps": {
+    "type": "git",
+    "url": "file:///home/isaac/hdeps",
+    "commit": "129a6c2b453f7e62999fd4a17bc291e527966021"
   }
 }

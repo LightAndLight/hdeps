@@ -18,7 +18,7 @@
           buildInputs = with pkgs; [
             cabal-install
 
-            (haskellPackages.ghcWithPackages (p: [p.aeson p.beam-postgres-trans]))
+            (haskellPackages.ghcWithPackages (p: [p.aeson p.beam-postgres-trans p.hdeps]))
           ];
         };
       }
