@@ -295,12 +295,16 @@ fetchGit outputDir url commit nixName fileName = do
 urlHackageRevision ::
   -- | Package name
   Text ->
+  -- | Package version
+  Text ->
   -- | Revision
   Text ->
   Text
-urlHackageRevision name revision =
+urlHackageRevision name version revision =
   fromString "https://hackage.haskell.org/package/"
     <> name
+    <> fromString "-"
+    <> version
     <> fromString "/revision/"
     <> revision
     <> fromString ".cabal"
@@ -350,7 +354,7 @@ getHdep outputDir name (Hackage version mRevision) = do
   createDirectoryIfMissing True packageDir
 
   mRevisionInfo <- for mRevision $ \revision -> do
-    let url = urlHackageRevision name revision
+    let url = urlHackageRevision name version revision
 
     let nixFile = "cabal.nix"
     revisedCabalStorePath <-
