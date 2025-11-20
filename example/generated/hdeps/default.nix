@@ -1,10 +1,10 @@
-{ mkDerivation, aeson, base, bytestring, containers, directory, lib
-, optparse-applicative, process, text
+{ mkDerivation, aeson, base, bytestring, callPackage, containers
+, directory, lib, optparse-applicative, process, text
 }:
 mkDerivation {
   pname = "hdeps";
   version = "0.1.0.0";
-  src = import ./src.nix;
+  src = callPackage ./src.nix {};
   isLibrary = true;
   isExecutable = true;
   libraryHaskellDepends = [ base ];

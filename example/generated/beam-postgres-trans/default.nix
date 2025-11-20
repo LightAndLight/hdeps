@@ -1,6 +1,6 @@
 { mkDerivation, aeson, attoparsec, base, beam-core, beam-migrate
-, beam-postgres, bytestring, case-insensitive, conduit, free
-, hashable, haskell-src-exts, hedgehog, lib, lifted-base
+, beam-postgres, bytestring, callPackage, case-insensitive, conduit
+, free, hashable, haskell-src-exts, hedgehog, lib, lifted-base
 , monad-control, mtl, network-uri, postgresql-libpq
 , postgresql-simple, scientific, tagged, tasty, tasty-hunit, text
 , time, tmp-postgres, transformers-base, unordered-containers, uuid
@@ -9,7 +9,7 @@
 mkDerivation {
   pname = "beam-postgres-trans";
   version = "0.5.3.1";
-  src = import ./src.nix;
+  src = callPackage ./src.nix {};
   postUnpack = "sourceRoot+=/beam-postgres-trans; echo source root reset to $sourceRoot";
   libraryHaskellDepends = [
     aeson attoparsec base beam-core beam-migrate beam-postgres

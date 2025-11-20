@@ -13,6 +13,7 @@ import qualified Data.Aeson as Json
 import qualified Data.Aeson.Types as Json (parseMaybe)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy.Char8 as LazyByteString.Char8
+import Data.List (isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, maybeToList)
@@ -201,7 +202,8 @@ fetchUrl outputDir url nixName fileName = do
   let nixFile = outputDir ++ "/" ++ fileName
   writeFile nixFile $
     unlines
-      [ "builtins.fetchurl {"
+      [ "{ fetchurl }:"
+      , "fetchurl {"
       , "  url = \"" <> url <> "\";"
       , "  sha256 = \"" <> hash.value <> "\";"
       , "}"
@@ -227,7 +229,8 @@ fetchTarball outputDir url nixName fileName = do
   let nixFile = outputDir ++ "/" ++ fileName
   writeFile nixFile $
     unlines
-      [ "builtins.fetchTarball {"
+      [ "{ fetchzip }:"
+      , "fetchzip {"
       , "  url = \"" <> url <> "\";"
       , "  sha256 = \"" <> hash.value <> "\";"
       , "}"
@@ -278,16 +281,34 @@ fetchGit ::
   IO NixStorePath
 fetchGit outputDir url commit nixName fileName = do
   hPutStrLn stderr $ "fetching " ++ url ++ "..."
-  (_hash, storePath) <- nixPrefetchGit nixName url commit
+  (hash, storePath) <- nixPrefetchGit nixName url commit
 
   let nixFile = outputDir ++ "/" ++ fileName
-  writeFile nixFile $
-    unlines
-      [ "builtins.fetchGit {"
-      , "  url = \"" <> url <> "\";"
-      , "  rev = \"" <> commit <> "\";"
-      , "}"
-      ]
+  if "file://" `isPrefixOf` url
+    then
+      {- The Nix daemon doesn't have permission to access one's home directory, so local Git
+      repositories are fetched at evaluation time. Hopefully this isn't too slow.
+
+      See: <https://discourse.nixos.org/t/fetchgit-suddenly-cant-clone-a-local-repository/17806/5>
+      -}
+      writeFile nixFile $
+        unlines
+          [ "{}:"
+          , "builtins.fetchGit {"
+          , "  url = \"" <> url <> "\";"
+          , "  rev = \"" <> commit <> "\";"
+          , "}"
+          ]
+    else
+      writeFile nixFile $
+        unlines
+          [ "{ fetchgit }:"
+          , "fetchgit {"
+          , "  url = \"" <> url <> "\";"
+          , "  rev = \"" <> commit <> "\";"
+          , "  sha256 = \"" <> hash.value <> "\";"
+          , "}"
+          ]
   hPutStrLn stderr $ "  created " ++ nixFile
 
   pure storePath
@@ -376,14 +397,14 @@ getHdep outputDir name (Hackage version mRevision) = do
       let srcRevisedNix = packageDir ++ "/src-revised.nix"
       writeFile srcRevisedNix $
         unlines
-          [ "{ stdenv }:"
+          [ "{ stdenv, callPackage }:"
           , "stdenv.mkDerivation {"
           , "  name = \"" ++ drvName <> "-r" <> Text.unpack revision <> "-src" ++ "\";"
-          , "  src = import ./src.nix;"
+          , "  src = callPackage ./src.nix {};"
           , "  installPhase = ''"
           , "    mkdir $out"
           , "    cp -R * $out/"
-          , "    cp ${import ./cabal.nix} $out/" ++ Text.unpack name ++ ".cabal"
+          , "    cp ${callPackage ./cabal.nix {}} $out/" ++ Text.unpack name ++ ".cabal"
           , "  '';"
           , "}"
           ]
@@ -395,16 +416,21 @@ getHdep outputDir name (Hackage version mRevision) = do
   case mRevisedSrc of
     Nothing ->
       writeFile drvFile
-        =<< readProcess "sed" ["s/" ++ sedEscape src.value ++ "/" ++ sedEscape "import ./src.nix" ++ "/g"]
-        =<< readProcess "cabal2nix" [src.value] ""
+        =<< readProcess
+          "sed"
+          ["s/" ++ sedEscape src.value ++ "/" ++ sedEscape "callPackage ./src.nix {}" ++ "/g"]
+        =<< readProcess "cabal2nix" ["--extra-arguments", "callPackage", src.value] ""
     Just revisedCabalStorePath ->
       writeFile drvFile
         =<< readProcess
           "sed"
-          [ "s/editedCabalFile = .*/src = " ++ sedEscape "import ./src-revised.nix { inherit stdenv; }" ++ ";/g"
+          [ "s/editedCabalFile = .*/src = " ++ sedEscape "callPackage ./src-revised.nix {}" ++ ";/g"
           ]
         =<< readProcess "sed" ["/^ *sha256.*/d"]
-        =<< readProcess "cabal2nix" ["--extra-arguments", "stdenv", revisedCabalStorePath.value] ""
+        =<< readProcess
+          "cabal2nix"
+          ["--extra-arguments", "stdenv", "--extra-arguments", "callPackage", revisedCabalStorePath.value]
+          ""
   hPutStrLn stderr $ "  created " ++ drvFile
 
   hPutStrLn stderr "done"
@@ -426,10 +452,13 @@ getHdep outputDir name (Github owner repository commit mDirectory mTests) = do
 
   let drvFile = packageDir ++ "/default.nix"
   writeFile drvFile
-    =<< readProcess "sed" ["s/" ++ sedEscape src.value ++ "/" ++ sedEscape "import ./src.nix" ++ "/g"]
+    =<< readProcess
+      "sed"
+      ["s/" ++ sedEscape src.value ++ "/" ++ sedEscape "callPackage ./src.nix {}" ++ "/g"]
     =<< readProcess
       "cabal2nix"
       ( maybe [] (\directory -> ["--subpath", Text.unpack directory]) mDirectory
+          ++ ["--extra-arguments", "callPackage"]
           ++ ["--no-check" | maybe False not mTests]
           ++ [src.value]
       )
@@ -449,10 +478,13 @@ getHdep outputDir name (Git url commit mDirectory mTests) = do
 
   let drvFile = packageDir ++ "/default.nix"
   writeFile drvFile
-    =<< readProcess "sed" ["s/" ++ sedEscape src.value ++ "/" ++ sedEscape "import ./src.nix" ++ "/g"]
+    =<< readProcess
+      "sed"
+      ["s/" ++ sedEscape src.value ++ "/" ++ sedEscape "callPackage ./src.nix {}" ++ "/g"]
     =<< readProcess
       "cabal2nix"
       ( maybe [] (\directory -> ["--subpath", Text.unpack directory]) mDirectory
+          ++ ["--extra-arguments", "callPackage"]
           ++ ["--no-check" | maybe False not mTests]
           ++ [src.value]
       )

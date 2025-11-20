@@ -9,7 +9,7 @@
           inherit system;
           overlays = [
             (self: super: {
-              haskellPackages = super.haskellPackages.extend (import ./hdeps/overlay.nix);
+              haskellPackages = super.haskellPackages.extend (import ./generated/overlay.nix);
             })
           ];
         };
