@@ -20,6 +20,12 @@
             fd
           ];
         };
+
+        packages = rec {
+          default = pkgs.haskell.lib.justStaticExecutables hdeps;
+
+          hdeps = pkgs.haskellPackages.callPackage ./hdeps.nix {};
+        };
       }
     );
 }
