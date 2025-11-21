@@ -7,13 +7,14 @@
 
 module Main where
 
-import Control.Applicative (optional, (<**>))
+import Control.Applicative (many, optional, (<**>))
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.:?), (.=))
 import qualified Data.Aeson as Json
 import qualified Data.Aeson.Types as Json (parseMaybe)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy.Char8 as LazyByteString.Char8
 import Data.List (isPrefixOf)
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, maybeToList)
@@ -28,7 +29,7 @@ import System.IO (hPutStrLn, stderr)
 import qualified System.Process as Process
 
 data Cli
-  = Cli {inputFile :: Maybe FilePath, outputDir :: FilePath}
+  = Cli {inputFile :: Maybe FilePath, outputDir :: FilePath, packages :: [String]}
 
 cliParser :: Options.Parser Cli
 cliParser =
@@ -47,6 +48,11 @@ cliParser =
           <> Options.help "Output directory"
           <> Options.value "./hdeps"
           <> Options.showDefault
+      )
+    <*> many
+      ( Options.strArgument $
+          Options.metavar "PACKAGES"
+            <> Options.help "Update the given PACKAGES (default: update all packages)"
       )
 
 newtype Hdeps
@@ -120,6 +126,7 @@ instance FromJSON Hdep where
 main :: IO ()
 main = do
   cli <- Options.execParser (Options.info (cliParser <**> Options.helper) Options.fullDesc)
+  let mPackageFilter = NonEmpty.nonEmpty $ fmap Text.pack cli.packages
 
   result <-
     case cli.inputFile of
@@ -136,7 +143,9 @@ main = do
   names <-
     Map.traverseWithKey
       ( \name hdep -> do
-          getHdep cli.outputDir name hdep
+          case mPackageFilter of
+            Just names | name `notElem` names -> pure ()
+            _ -> getHdep cli.outputDir name hdep
           pure name
       )
       hdeps
