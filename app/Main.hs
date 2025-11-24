@@ -8,6 +8,7 @@
 module Main where
 
 import Control.Applicative (many, optional, (<**>))
+import Control.Monad (unless)
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.:?), (.=))
 import qualified Data.Aeson as Json
 import qualified Data.Aeson.Types as Json (parseMaybe)
@@ -35,6 +36,7 @@ data Cli
   { inputFile :: Maybe FilePath
   , outputDir :: FilePath
   , cabalProjectFile :: Maybe FilePath
+  , noFetch :: Bool
   , packages :: [String]
   }
 
@@ -63,6 +65,7 @@ cliParser =
             <> Options.help
               "Sync the dependency requirements to a cabal.project file. Creates the cabal.project file if missing."
       )
+    <*> Options.switch (Options.long "no-fetch" <> Options.help "Don't fetch any sources.")
     <*> many
       ( Options.strArgument $
           Options.metavar "PACKAGES"
@@ -159,7 +162,7 @@ main = do
       ( \name hdep -> do
           case mPackageFilter of
             Just names | name `notElem` names -> pure ()
-            _ -> getHdep cli.outputDir name hdep
+            _ -> unless cli.noFetch $ fetchHdep cli.outputDir name hdep
           pure name
       )
       hdeps
@@ -396,7 +399,7 @@ urlGithubCommit owner repository commit =
     <> commit
     <> fromString ".tar.gz"
 
-getHdep ::
+fetchHdep ::
   -- | Output directory
   FilePath ->
   -- | Package name
@@ -404,7 +407,7 @@ getHdep ::
   Hdep ->
   -- | Derivation path relative to output directory
   IO ()
-getHdep outputDir name (Hackage version mRevision) = do
+fetchHdep outputDir name (Hackage version mRevision) = do
   let packageDir = outputDir ++ "/" ++ Text.unpack name
   createDirectoryIfMissing True packageDir
 
@@ -468,7 +471,7 @@ getHdep outputDir name (Hackage version mRevision) = do
   hPutStrLn stderr $ "  created " ++ drvFile
 
   hPutStrLn stderr "done"
-getHdep outputDir name (Github owner repository commit mDirectory mTests) = do
+fetchHdep outputDir name (Github owner repository commit mDirectory mTests) = do
   let packageDir = outputDir ++ "/" ++ Text.unpack name
   createDirectoryIfMissing True packageDir
 
@@ -500,7 +503,7 @@ getHdep outputDir name (Github owner repository commit mDirectory mTests) = do
   hPutStrLn stderr $ "  created " ++ drvFile
 
   hPutStrLn stderr "done"
-getHdep outputDir name (Git url commit mDirectory mTests) = do
+fetchHdep outputDir name (Git url commit mDirectory mTests) = do
   let packageDir = outputDir ++ "/" ++ Text.unpack name
   createDirectoryIfMissing True packageDir
 
