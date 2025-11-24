@@ -13,23 +13,30 @@ import qualified Data.Aeson as Json
 import qualified Data.Aeson.Types as Json (parseMaybe)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy.Char8 as LazyByteString.Char8
-import Data.List (isPrefixOf)
+import Data.Foldable (for_)
+import Data.List (intercalate, isPrefixOf)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, maybeToList)
+import Data.Maybe (fromMaybe, mapMaybe, maybeToList)
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.IO
 import Data.Traversable (for)
 import qualified Options.Applicative as Options
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile)
 import System.Exit (exitFailure)
-import System.IO (hPutStrLn, stderr)
+import System.IO (IOMode (..), hPutStr, hPutStrLn, stderr, withFile)
 import qualified System.Process as Process
 
 data Cli
-  = Cli {inputFile :: Maybe FilePath, outputDir :: FilePath, packages :: [String]}
+  = Cli
+  { inputFile :: Maybe FilePath
+  , outputDir :: FilePath
+  , cabalProjectFile :: Maybe FilePath
+  , packages :: [String]
+  }
 
 cliParser :: Options.Parser Cli
 cliParser =
@@ -48,6 +55,13 @@ cliParser =
           <> Options.help "Output directory"
           <> Options.value "./hdeps"
           <> Options.showDefault
+      )
+    <*> optional
+      ( Options.strOption $
+          Options.long "cabal-project"
+            <> Options.metavar "FILE"
+            <> Options.help
+              "Sync the dependency requirements to a cabal.project file. Creates the cabal.project file if missing."
       )
     <*> many
       ( Options.strArgument $
@@ -160,6 +174,8 @@ main = do
         names
       ++ ["}"]
   hPutStrLn stderr $ "created " ++ overlayFile
+
+  for_ cli.cabalProjectFile $ createOrUpdateCabalProjectFile hdeps
 
 readProcess :: FilePath -> [String] -> String -> IO String
 readProcess =
@@ -511,3 +527,100 @@ getHdep outputDir name (Git url commit mDirectory mTests) = do
   hPutStrLn stderr $ "  created " ++ drvFile
 
   hPutStrLn stderr "done"
+
+createOrUpdateCabalProjectFile :: Map Text Hdep -> FilePath -> IO ()
+createOrUpdateCabalProjectFile hdeps cabalProjectFile = do
+  exists <- doesFileExist cabalProjectFile
+  if exists
+    then updateCabalProjectFile hdeps cabalProjectFile
+    else createCabalProjectFile hdeps cabalProjectFile
+
+createCabalProjectFile :: Map Text Hdep -> FilePath -> IO ()
+createCabalProjectFile hdeps path = do
+  writeFile path (generateCabalProjectEntries hdeps)
+  hPutStrLn stderr $ "created " ++ path
+
+updateCabalProjectFile :: Map Text Hdep -> FilePath -> IO ()
+updateCabalProjectFile hdeps path = do
+  contents <- Data.Text.IO.readFile path
+  mSurrounds <-
+    case Text.splitOn (fromString "--- BEGIN HDEPS ---\n") contents of
+      [prefix, rest]
+        | [_, suffix] <- Text.splitOn (fromString "--- END HDEPS ---\n") rest ->
+            pure $ Just (prefix, suffix)
+      [_] -> pure Nothing
+      _ -> do
+        hPutStrLn stderr $ "error: invalid hdeps markers in " ++ path
+        exitFailure
+  renameFile path (path ++ ".old")
+  case mSurrounds of
+    Nothing -> do
+      withFile path AppendMode $ \handle -> do
+        Data.Text.IO.hPutStr handle contents
+        hPutStr handle "\n"
+        hPutStr handle $ generateCabalProjectEntries hdeps
+    Just (before, after) ->
+      withFile path AppendMode $ \handle -> do
+        Data.Text.IO.hPutStr handle before
+        hPutStr handle $ generateCabalProjectEntries hdeps
+        Data.Text.IO.hPutStr handle after
+  hPutStrLn stderr $ "updated " ++ path
+
+generateCabalProjectEntries :: Map Text Hdep -> String
+generateCabalProjectEntries hdeps =
+  "--- BEGIN HDEPS ---\n\n"
+    ++ ( if null constraints
+          then ""
+          else
+            "constraints:\n"
+              ++ intercalate ",\n" (fmap ("  " ++) constraints)
+              ++ "\n\n"
+       )
+    ++ foldMap (++ "\n") sourceRepositoryPackages
+    ++ "--- END HDEPS ---\n"
+  where
+    constraints =
+      mapMaybe
+        ( \(name, hdep) ->
+            case hdep of
+              Hackage version _revision -> Just $ Text.unpack name ++ " == " ++ Text.unpack version
+              Github{} -> Nothing
+              Git{} -> Nothing
+        )
+        (Map.toList hdeps)
+
+    sourceRepositoryPackage ::
+      -- \| Type
+      String ->
+      -- \| Location
+      String ->
+      -- \| Tag
+      String ->
+      -- \| Subdirectory (optional)
+      Maybe Text ->
+      String
+    sourceRepositoryPackage type_ location tag mSubdir =
+      unlines $
+        [ "source-repository-package"
+        , "  type: " ++ type_
+        , "  location: " ++ location
+        , "  tag: " ++ tag
+        ]
+          ++ ["  subdir: " ++ Text.unpack directory | directory <- maybeToList mSubdir]
+
+    sourceRepositoryPackages =
+      mapMaybe
+        ( \(_name, hdep) ->
+            case hdep of
+              Github owner repository commit mDirectory _tests ->
+                Just $
+                  sourceRepositoryPackage
+                    "git"
+                    (Text.unpack $ urlGithubCommit owner repository commit)
+                    (Text.unpack commit)
+                    mDirectory
+              Git url commit mDirectory _tests ->
+                Just $ sourceRepositoryPackage "git" url (Text.unpack commit) mDirectory
+              Hackage{} -> Nothing
+        )
+        (Map.toList hdeps)
