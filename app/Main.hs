@@ -255,12 +255,17 @@ nixPrefetchGit ::
   String ->
   -- | Commit
   String ->
+  -- | Fetch submodules
+  Bool ->
   IO (Hash, NixStorePath)
-nixPrefetchGit name url commit = do
+nixPrefetchGit name url commit fetchSubmodules = do
   output <-
     readProcess
       "nix-prefetch-git"
-      ["--name", name, "--rev", commit, url]
+      ( ["--name", name, "--rev", commit]
+          ++ ["--fetch-submodules" | fetchSubmodules]
+          ++ [url]
+      )
       ""
 
   let
@@ -283,14 +288,16 @@ fetchGit ::
   String ->
   -- | Commit
   String ->
+  -- | Fetch submodules
+  Bool ->
   -- | Name in the Nix store
   String ->
   -- | Nix file name
   String ->
   IO NixStorePath
-fetchGit outputDir url commit nixName fileName = do
+fetchGit outputDir url commit fetchSubmodules nixName fileName = do
   hPutStrLn stderr $ "fetching " ++ url ++ "..."
-  (hash, storePath) <- nixPrefetchGit nixName url commit
+  (hash, storePath) <- nixPrefetchGit nixName url commit fetchSubmodules
 
   let nixFile = outputDir ++ "/" ++ fileName
   if "file://" `isPrefixOf` url
@@ -306,6 +313,7 @@ fetchGit outputDir url commit nixName fileName = do
           , "builtins.fetchGit {"
           , "  url = \"" <> url <> "\";"
           , "  rev = \"" <> commit <> "\";"
+          , "  submodules = " <> (if fetchSubmodules then "true" else "false") <> ";"
           , "}"
           ]
     else
@@ -316,6 +324,7 @@ fetchGit outputDir url commit nixName fileName = do
           , "  url = \"" <> url <> "\";"
           , "  rev = \"" <> commit <> "\";"
           , "  sha256 = \"" <> hash.value <> "\";"
+          , "  fetchSubmodules = " <> (if fetchSubmodules then "true" else "false") <> ";"
           , "}"
           ]
   hPutStrLn stderr $ "  created " ++ nixFile
@@ -483,7 +492,8 @@ getHdep outputDir name (Git url commit mDirectory mTests) = do
         "local-"
           <> Text.unpack commit
           <> foldMap (("-" <>) . Text.unpack) mDirectory
-  src <- fetchGit packageDir url (Text.unpack commit) (drvName <> "-src") "src.nix"
+  let fetchSubmodules = False
+  src <- fetchGit packageDir url (Text.unpack commit) fetchSubmodules (drvName <> "-src") "src.nix"
 
   let drvFile = packageDir ++ "/default.nix"
   writeFile drvFile
