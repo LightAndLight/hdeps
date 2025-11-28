@@ -8,14 +8,14 @@
 module Main where
 
 import Control.Applicative (many, optional, (<**>))
-import Control.Monad (unless)
+import Control.Monad (guard, unless)
 import Data.Aeson (FromJSON (..), ToJSON (..), (.:), (.:?), (.=))
 import qualified Data.Aeson as Json
 import qualified Data.Aeson.Types as Json (parseMaybe)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy.Char8 as LazyByteString.Char8
 import Data.Foldable (for_)
-import Data.List (intercalate, isPrefixOf)
+import Data.List (intercalate, isPrefixOf, (\\))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -26,7 +26,16 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO
 import Data.Traversable (for)
 import qualified Options.Applicative as Options
-import System.Directory (createDirectoryIfMissing, doesFileExist, renameFile, removeFile)
+import System.Directory
+  ( createDirectoryIfMissing
+  , doesDirectoryExist
+  , doesFileExist
+  , listDirectory
+  , removeDirectoryRecursive
+  , removeFile
+  , renameDirectory
+  , renameFile
+  )
 import System.Exit (exitFailure)
 import System.IO (IOMode (..), hPutStr, hPutStrLn, stderr, withFile)
 import qualified System.Process as Process
@@ -157,6 +166,16 @@ main = do
       Right a -> pure a
 
   createDirectoryIfMissing True cli.outputDir
+  currentPackages <- do
+    entries <- listDirectory cli.outputDir
+    entries' <- for entries $ \entry -> do
+      exists <- doesDirectoryExist $ cli.outputDir ++ "/" ++ entry
+      pure (entry, exists)
+    pure $ mapMaybe (\(entry, keep) -> entry <$ guard keep) entries'
+
+  let removedPackagesDir = "hdeps-to-remove"
+  createDirectoryIfMissing True removedPackagesDir
+
   names <-
     Map.traverseWithKey
       ( \name hdep -> do
@@ -166,6 +185,11 @@ main = do
           pure name
       )
       hdeps
+
+  for_ (currentPackages \\ fmap Text.unpack (Map.keys names)) $ \package -> do
+    let packageDir = cli.outputDir ++ "/" ++ package
+    renameDirectory packageDir (removedPackagesDir ++ "/" ++ package)
+    hPutStrLn stderr $ "removed " ++ packageDir
 
   let overlayFile = cli.outputDir ++ "/overlay.nix"
   writeFile overlayFile . unlines $
@@ -179,6 +203,7 @@ main = do
   hPutStrLn stderr $ "created " ++ overlayFile
 
   for_ cli.cabalProjectFile $ createOrUpdateCabalProjectFile hdeps
+  removeDirectoryRecursive removedPackagesDir
 
 readProcess :: FilePath -> [String] -> String -> IO String
 readProcess =
