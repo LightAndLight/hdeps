@@ -407,6 +407,18 @@ urlHackagePackage name version =
     <> version
     <> fromString ".tar.gz"
 
+urlGithubRepo ::
+  -- | Owner
+  Text ->
+  -- | Repository
+  Text ->
+  Text
+urlGithubRepo owner repository =
+  fromString "https://github.com/"
+    <> owner
+    <> fromString "/"
+    <> repository
+
 urlGithubCommit ::
   -- | Owner
   Text ->
@@ -416,10 +428,7 @@ urlGithubCommit ::
   Text ->
   Text
 urlGithubCommit owner repository commit =
-  fromString "https://github.com/"
-    <> owner
-    <> fromString "/"
-    <> repository
+  urlGithubRepo owner repository
     <> fromString "/archive/"
     <> commit
     <> fromString ".tar.gz"
@@ -646,7 +655,7 @@ generateCabalProjectEntries hdeps =
                 Just $
                   sourceRepositoryPackage
                     "git"
-                    (Text.unpack $ urlGithubCommit owner repository commit)
+                    (Text.unpack (urlGithubRepo owner repository) <> ".git")
                     (Text.unpack commit)
                     mDirectory
               Git url commit mDirectory _tests ->

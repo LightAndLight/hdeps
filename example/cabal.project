@@ -1,0 +1,17 @@
+--- BEGIN HDEPS ---
+
+constraints:
+  aeson == 2.2.3.0
+
+source-repository-package
+  type: git
+  location: https://github.com/LightAndLight/beam.git
+  tag: 3ebb79baff43416caee95e81c05ce74c429bbe82
+  subdir: beam-postgres-trans
+
+source-repository-package
+  type: git
+  location: file:///home/isaac/hdeps
+  tag: 129a6c2b453f7e62999fd4a17bc291e527966021
+
+--- END HDEPS ---
